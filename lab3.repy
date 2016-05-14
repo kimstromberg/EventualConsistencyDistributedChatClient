@@ -1,0 +1,147 @@
+# Group 20
+# Robin Karlsson
+# Kim Strömberg
+
+# Will return the html for the board with the string msg in it. 
+def html(msg):
+  return '<html>\n'\
+  '<head>\n'\
+  '  <meta content="text/html; charset=utf-8" http-equiv="content-type">\n'\
+  '  <title>Blackboard GroupName</title>\n'\
+  '</head>\n'\
+  '<body>\n'\
+  '  <h4> clock='+str(mycontext["clock"])+'</h4>'\
+  '  <h2> Board Content Group 20</h2>\n'\
+  '<p>' + msg + '</p>\n'\
+  '  <br>\n'\
+  '  <h3>Submit to board<h3>\n'\
+  '  <textarea rows="10" cols="50" name="comment" form="usrform"></textarea>\n'\
+  '  <form action="" id="usrform" method="post">\n'\
+  '  <input type="submit">\n'\
+  '  </form>\n'\
+  '</body>\n'\
+  '</html>\n'\
+  
+# Whenever a vessel gets a connection, this function gets called in order to handle it.
+# The connection is either a POST, GET 
+# or a communication message between the vessels in order to update all the boards.
+def board(ip, port, sockobj, thiscommhandle, listencommhandle):
+  msgheader=sockobj.recv(1024) # Receive message,
+ 
+  if not msgheader.startswith( 'GET' ): # For testing and measuring
+    if mycontext["bool"]==1: # Set the time for when the vessels received its first message
+      mycontext["first_time"]=getruntime()
+      mycontext["bool"]=0
+
+  # React depending on message type: HTTP, GET or POST, or some other type of communication.
+  # If it is a GET message simply return the html code.
+  if msgheader.startswith( 'GET' ):
+    htmlresponse = html( getBoard() + " " )
+    sockobj.send("HTTP/1.1 200 OK\r\nContent-type: text/html\r\n" + \
+    "Content-length: %i\r\n\r\n%s" % (len(htmlresponse), htmlresponse))
+    stopcomm(thiscommhandle)
+  # If it is a POST message, insert this message into the list of messages together
+  # with clockvalue and IP and then send this message to all the other vessels
+  elif msgheader.startswith( 'POST' ):
+    words = msgheader.split() 
+    mycontext["lock"].acquire()
+    mycontext["clock"]+=1
+    for word in words:
+      if word.startswith( 'comment=' ):
+        comment=word[8:]
+    insertMsg(mycontext["clock"], getmyip(),comment+" ")
+    sendToOthers("clock="+str(mycontext["clock"])+"\nIP="+getmyip()+"\ncomment="+comment)
+    mycontext["lock"].release()
+    htmlresponse = html( getBoard() + " ")
+    sockobj.send("HTTP/1.1 200 OK\r\nContent-type: text/html\r\n" + \
+    "Content-length: %i\r\n\r\n%s" % (len(htmlresponse), htmlresponse))
+    stopcomm(thiscommhandle) 
+  # Otherwise it's a message from a vessel to update the board
+  else:
+    words=msgheader.split()
+    mycontext["lock"].acquire()
+    for word in words:
+      if word.startswith( 'clock=' ):
+        clock=word[6:] 
+      elif word.startswith( 'IP=' ):
+        IP=word[3:]
+      elif word.startswith( 'comment=' ):
+        comment=word[8:]
+    insertMsg(int(clock), IP, comment+" ") 
+    mycontext["clock"] = max(mycontext["clock"],int(clock)) + 1
+    # Print out the time between the first and last message received
+    print "Amount of messages received= " + str(len(mycontext["messages"]))
+    mycontext["last_time"]=getruntime() 
+    print "Time between first and last message= " + str(mycontext["last_time"]-mycontext["first_time"])
+    mycontext["lock"].release()
+    stopcomm(thiscommhandle)
+
+# Returns the IP with the highest IP in mycontext["vessels"] in order to break symmetry
+def highestIndex(IPa, IPb):
+  return mycontext["vessels"].index(IPa) > mycontext["vessels"].index(IPb)
+
+# Will insert the tuple (clock, IP, msg) into the correct position in mycontext["messages"]
+def insertMsg(clock, IP, msg):
+  tuple = (clock,IP,msg)
+  mycontext["messages"].append(tuple)
+  i = mycontext["messages"].index(tuple)  # i is index for the inserted value
+  while( i!=0 ):
+    if(mycontext["messages"][i][0] < mycontext["messages"][i-1][0] or (mycontext["messages"][i][0]==mycontext["messages"][i-1][0] and highestIndex(mycontext["messages"][i][1],mycontext["messages"][i-1][1] ))):
+      tmp=mycontext["messages"][i-1]
+      mycontext["messages"][i-1]=mycontext["messages"][i]
+      mycontext["messages"][i]=tmp
+      i = i-1 
+    else:
+      i = 0
+
+# Will return a string representing the board with all the messages in correct ordering
+def getBoard():
+  board=""
+  if( len(mycontext["messages"]) > 0 ):
+    for msg in mycontext["messages"]:
+      board=board+msg[-1]
+  return board 
+
+# Tries to send msg to the vessel with IP on the input port
+def sendMsg(IP, msg):
+  try:
+    conn=openconn(IP, int(callargs[0]))
+    conn.send(msg+" ")
+    conn.close()
+  except:
+    print "Connection failed to vessel: " + IP + ":" + callargs[0]
+
+# Will try to send the input string msg to all other vessels who will store this on their board
+def sendToOthers(msg):
+  myip=getmyip() 
+  for vessel in mycontext["vessels"]:
+    if(vessel!=myip):
+      sendMsg(vessel, msg)
+
+if callfunc == 'initialize':
+  mycontext["messages"]=[]  #list of all the messages sent and received on the boards
+  #hardcoded list of all the vessels currently connected with
+  mycontext["vessels"] = ['192.16.125.12','165.230.49.119','129.187.143.20','206.117.37.7','156.17.10.52','137.189.98.208','198.82.160.221','128.42.142.45','202.141.161.44']
+  mycontext["clock"]=1 
+  mycontext["lock"]=getlock()
+  mycontext["bool"]=1
+  mycontext["first_time"]=0
+  mycontext["last_time"]=0
+
+  if len(callargs) > 1:
+    raise Exception("Too many call arguments")
+  
+  # Running remotely (assuming that we pass input argument only remotely):
+  # whenever this vessel gets a connection on its IPaddress:Clearinghouseport it'll call function board
+  elif len(callargs) == 1:
+    port = int(callargs[0])
+    ip = getmyip()
+  
+  # Running locally:
+  # whenever we get a connection on 127.0.0.1:12345 we'll call board
+  else:
+    port = 12345
+    ip = '127.0.0.1'
+  
+# Whenever a vessel gets a connection, it will call the board function to handle it
+  listencommhandle = waitforconn(ip,port,board) 
